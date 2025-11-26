@@ -4,7 +4,7 @@
 
   const api = axios.create({
     // Instead of using .env, directly give your backend URL:
-    baseURL: 'https://focus-gps-backend-1.onrender.com',  // change this to your backend's actual URL
+    baseURL: 'https://focus-gps-backend-1.onrender.com/api',  // change this to your backend's actual URL
     headers: {
       'Content-Type': 'application/json',
       
