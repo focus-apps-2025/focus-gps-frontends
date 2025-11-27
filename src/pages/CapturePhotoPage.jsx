@@ -47,7 +47,6 @@ const getVideoConstraints = (isMobile, facingMode) => ({
 const CapturePhotoPage = ({ onClose, embedded = false }) => {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
-  // *** NEW: Ref to store the MediaStream object from the initial permission check ***
   const initialCameraStreamRef = useRef(null); 
   
   const navigate = useNavigate();
@@ -55,9 +54,10 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isSmallMobile = useMediaQuery(theme.breakpoints.down('sm'));
   
-  // *** NEW: Camera state ***
-  const [cameraFacingMode, setCameraFacingMode] = useState('environment'); // 'environment' (back) or 'user' (front)
+  // Camera state
+  const [cameraFacingMode, setCameraFacingMode] = useState('environment');
   const [cameraMenuAnchor, setCameraMenuAnchor] = useState(null);
+  const [cameraKey, setCameraKey] = useState(0); // Key to force Webcam re-render
   
   const getCaptureAreaDimensions = (isMobile) => ({
     width: isMobile ? 320 : 480,
@@ -94,14 +94,25 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     }
   };
 
-  // *** NEW: Camera switch handler ***
-  const handleSwitchCamera = () => {
-    setCameraFacingMode(prevMode => 
-      prevMode === 'environment' ? 'user' : 'environment'
-    );
+  // Camera switch handler
+  const handleSwitchCamera = async () => {
+    const newFacingMode = cameraFacingMode === 'environment' ? 'user' : 'environment';
+    
+    // Stop current stream if exists
+    if (webcamRef.current && webcamRef.current.stream) {
+      webcamRef.current.stream.getTracks().forEach(track => {
+        track.stop();
+      });
+    }
+    
+    // Force Webcam component to re-render with new constraints
+    setCameraFacingMode(newFacingMode);
+    setCameraKey(prev => prev + 1); // Change key to force re-mount
+    
+    console.log(`Switched to ${newFacingMode === 'environment' ? 'back' : 'front'} camera`);
   };
 
-  // *** NEW: Camera menu handlers ***
+  // Camera menu handlers
   const handleCameraMenuOpen = (event) => {
     setCameraMenuAnchor(event.currentTarget);
   };
@@ -110,9 +121,47 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     setCameraMenuAnchor(null);
   };
 
-  const handleCameraSelect = (facingMode) => {
+  const handleCameraSelect = async (facingMode) => {
+    if (facingMode === cameraFacingMode) {
+      handleCameraMenuClose();
+      return;
+    }
+    
+    // Stop current stream if exists
+    if (webcamRef.current && webcamRef.current.stream) {
+      webcamRef.current.stream.getTracks().forEach(track => {
+        track.stop();
+      });
+    }
+    
     setCameraFacingMode(facingMode);
+    setCameraKey(prev => prev + 1); // Force re-render
     handleCameraMenuClose();
+    
+    console.log(`Switched to ${facingMode === 'environment' ? 'back' : 'front'} camera`);
+  };
+
+  // *** NEW: Function to flip image horizontally ***
+  const flipImageHorizontally = (imageSrc) => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        
+        // Flip the image horizontally
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, 0, 0);
+        
+        resolve(canvas.toDataURL('image/jpeg', 0.9));
+      };
+      
+      img.src = imageSrc;
+    });
   };
 
   // Memoize updateLocation to ensure stable reference for useEffect dependencies
@@ -168,11 +217,14 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
           return;
         }
 
-        // *** CHANGE: Test with user-facing mode first to ensure both cameras work ***
+        // Test camera access
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'user' } 
+          video: { facingMode: 'environment' } 
         });
-        initialCameraStreamRef.current = stream;
+        
+        // Stop the test stream immediately
+        stream.getTracks().forEach(track => track.stop());
+        
         setPermissionStatus('granted');
 
         timer = setInterval(() => setDateTime(new Date()), 1000);
@@ -192,27 +244,18 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
       clearInterval(timer);
       clearInterval(locationInterval);
       
-      if (initialCameraStreamRef.current) {
-        initialCameraStreamRef.current.getTracks().forEach(track => {
+      // Stop webcam stream if exists
+      if (webcamRef.current && webcamRef.current.stream) {
+        webcamRef.current.stream.getTracks().forEach(track => {
           console.log(`Stopping track in useEffect cleanup: ${track.kind}`);
           track.stop();
         });
-        initialCameraStreamRef.current = null;
       }
     };
   }, [updateLocation]);
 
-  // *** NEW: Effect to handle camera switching ***
-  useEffect(() => {
-    // This effect handles camera switching when the facingMode changes
-    if (webcamRef.current && webcamRef.current.video) {
-      // The Webcam component will automatically re-render with new constraints
-      console.log(`Switched to ${cameraFacingMode === 'environment' ? 'back' : 'front'} camera`);
-    }
-  }, [cameraFacingMode]);
-
   // Omitted for brevity: fetchAddress, fetchDetailedAddress, fetchLocalAddress, fetchSimpleAddress, formatAddress
-  const fetchAddress = async (lat, lon) => { /* ... unchanged ... */ 
+  const fetchAddress = async (lat, lon) => { 
     try {
       setAddress('Getting precise location...');
       setIsAddressValid(false);
@@ -243,7 +286,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     }
   };
 
-  const fetchDetailedAddress = async (lat, lon) => { /* ... unchanged ... */ 
+  const fetchDetailedAddress = async (lat, lon) => { 
     const response = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&namedetails=1`
     );
@@ -253,7 +296,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     return formatAddress(data);
   };
 
-  const fetchLocalAddress = async (lat, lon) => { /* ... unchanged ... */ 
+  const fetchLocalAddress = async (lat, lon) => { 
     const response = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=16&addressdetails=1`
     );
@@ -262,7 +305,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     return data.display_name || 'Address not found';
   };
 
-  const fetchSimpleAddress = async (lat, lon) => { /* ... unchanged ... */ 
+  const fetchSimpleAddress = async (lat, lon) => { 
     const response = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=14`
     );
@@ -271,7 +314,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     return data.display_name || 'Address not found';
   };
 
-  const formatAddress = (data) => { /* ... unchanged ... */ 
+  const formatAddress = (data) => { 
     const address = data.address;
     if (!address) return data.display_name;
 
@@ -307,7 +350,13 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
       return;
     }
 
-    const finalImage = await createImageWithOverlay(imageSrc);
+    // *** UPDATED: Flip front camera images to correct mirror effect ***
+    let processedImageSrc = imageSrc;
+    if (cameraFacingMode === 'user') {
+      processedImageSrc = await flipImageHorizontally(imageSrc);
+    }
+
+    const finalImage = await createImageWithOverlay(processedImageSrc);
     setStampedImageSrc(finalImage);
     setViewMode('preview');
     setLoading(false);
@@ -334,7 +383,6 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
       formData.append('longitude', location.longitude.toString());
       formData.append('accuracy', location.accuracy.toString());
       formData.append('address', address);
-      // *** NEW: Add camera info to metadata ***
       formData.append('camera_type', cameraFacingMode === 'environment' ? 'back' : 'front');
 
       const response = await api.post('/photos/upload', formData, {
@@ -358,7 +406,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
     setViewMode('camera');
   };
 
-  const createImageWithOverlay = (imageSrc) => { /* ... unchanged ... */ 
+  const createImageWithOverlay = (imageSrc) => { 
     return new Promise((resolve) => {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
@@ -399,7 +447,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
         });
         ctx.fillText(`Date: ${dateStr} | Time: ${timeStr}`, padding, currentY);
         
-        // *** NEW: Add camera info to overlay ***
+        // Add camera info to overlay
         currentY += lineHeight;
         const cameraType = cameraFacingMode === 'environment' ? 'Back Camera' : 'Front Camera';
         ctx.fillText(`Camera: ${cameraType}`, padding, currentY);
@@ -550,7 +598,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
             </IconButton>
           )}
 
-          {/* *** NEW: Camera Switch Button *** */}
+          {/* Camera Switch Button */}
           <IconButton
             onClick={handleCameraMenuOpen}
             sx={{
@@ -570,7 +618,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
             <SwitchCamera sx={{ fontSize: { xs: 20, md: 24 } }} />
           </IconButton>
 
-          {/* *** NEW: Camera Selection Menu *** */}
+          {/* Camera Selection Menu */}
           <Menu
             anchorEl={cameraMenuAnchor}
             open={Boolean(cameraMenuAnchor)}
@@ -599,8 +647,9 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
             </MenuItem>
           </Menu>
 
-          {/* Camera feed */}
+          {/* Webcam with key prop to force re-render */}
           <Webcam
+            key={cameraKey} // Force re-mount when key changes
             audio={false}
             ref={webcamRef}
             screenshotFormat="image/jpeg"
@@ -610,8 +659,8 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
               height: '100%',
               objectFit: 'cover',
               borderRadius: embedded ? 0 : 12,
-              // *** CHANGED: Only mirror front camera ***
-              transform: cameraFacingMode === 'user' ? 'scaleX(-1)' : 'none',
+              // *** UPDATED: Remove transform scaling - handle mirroring in capture ***
+              transform: 'none',
             }}
           />
 
@@ -628,7 +677,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
               backdropFilter: 'blur(2px)',
             }}
           >
-            {/* *** NEW: Camera Type Indicator *** */}
+            {/* Camera Type Indicator */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
               <SwitchCamera fontSize={isMobile ? 'small' : 'medium'} />
               <Typography variant={isMobile ? 'caption' : 'body2'}>
