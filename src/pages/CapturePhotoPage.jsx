@@ -13,6 +13,8 @@ import {
   Paper,
   useMediaQuery,
   IconButton,
+  Menu,
+  MenuItem,
 } from '@mui/material';
 import {
   PhotoCamera,
@@ -27,15 +29,18 @@ import {
   Cancel,
   Close,
   ArrowBack,
+  CameraFront,
+  CameraRear,
+  SwitchCamera,
 } from '@mui/icons-material';
 import api from '../utils/api';
 import { useNavigate } from 'react-router-dom';
 
 // Responsive video constraints
-const getVideoConstraints = (isMobile) => ({
+const getVideoConstraints = (isMobile, facingMode) => ({
   width: isMobile ? 1280 : 1920,
   height: isMobile ? 720 : 1080,
-  facingMode: 'environment',
+  facingMode: facingMode,
   aspectRatio: isMobile ? 16/9 : 16/9,
 });
 
@@ -49,6 +54,10 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isSmallMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  
+  // *** NEW: Camera state ***
+  const [cameraFacingMode, setCameraFacingMode] = useState('environment'); // 'environment' (back) or 'user' (front)
+  const [cameraMenuAnchor, setCameraMenuAnchor] = useState(null);
   
   const getCaptureAreaDimensions = (isMobile) => ({
     width: isMobile ? 320 : 480,
@@ -72,22 +81,38 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
   const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState('');
 
-  // Get responsive video constraints
-  const videoConstraints = getVideoConstraints(isMobile);
+  // Get responsive video constraints with current camera mode
+  const videoConstraints = getVideoConstraints(isMobile, cameraFacingMode);
   const MIN_ACCEPTABLE_ACCURACY = 100;
 
   // --- Close/Cancel Handler ---
   const handleClose = () => {
-    // This `handleClose` function is called when the user clicks the 'Close' icon.
-    // In your `UserDashboard.jsx`, you pass `handleBackToDashboard` as `onClose`
-    // to CapturePhotoPage. When `onClose()` is called here, it changes the
-    // `activeView` state in `UserDashboard`, which causes CapturePhotoPage to unmount.
-    // The `useEffect` cleanup (defined below) will then handle releasing the camera.
     if (embedded && onClose) {
-      onClose(); // Go back to dashboard (this will cause this component to unmount)
+      onClose();
     } else {
-      navigate(-1); // Original behavior (this will also cause this component to unmount)
+      navigate(-1);
     }
+  };
+
+  // *** NEW: Camera switch handler ***
+  const handleSwitchCamera = () => {
+    setCameraFacingMode(prevMode => 
+      prevMode === 'environment' ? 'user' : 'environment'
+    );
+  };
+
+  // *** NEW: Camera menu handlers ***
+  const handleCameraMenuOpen = (event) => {
+    setCameraMenuAnchor(event.currentTarget);
+  };
+
+  const handleCameraMenuClose = () => {
+    setCameraMenuAnchor(null);
+  };
+
+  const handleCameraSelect = (facingMode) => {
+    setCameraFacingMode(facingMode);
+    handleCameraMenuClose();
   };
 
   // Memoize updateLocation to ensure stable reference for useEffect dependencies
@@ -126,7 +151,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
         maximumAge: 30000,
       }
     );
-  }, [location]); // Dependency on `location` for comparison logic
+  }, [location]);
 
   // --- Permissions and Live Data ---
   useEffect(() => {
@@ -143,14 +168,16 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
           return;
         }
 
-        // *** CHANGE HERE: Store the MediaStream object ***
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        initialCameraStreamRef.current = stream; // Store the stream here!
+        // *** CHANGE: Test with user-facing mode first to ensure both cameras work ***
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'user' } 
+        });
+        initialCameraStreamRef.current = stream;
         setPermissionStatus('granted');
 
         timer = setInterval(() => setDateTime(new Date()), 1000);
         locationInterval = setInterval(updateLocation, 10000);
-        updateLocation(); // Initial location update
+        updateLocation();
 
       } catch (err) {
         console.error("Camera/Geolocation permission or access error:", err);
@@ -160,23 +187,29 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
 
     checkAndInitialize();
 
-    // *** IMPORTANT: This is the cleanup function for your useEffect hook ***
-    // This runs when the component unmounts or when the dependencies of useEffect change.
     return () => {
       console.log("CapturePhotoPage useEffect cleanup running...");
       clearInterval(timer);
       clearInterval(locationInterval);
       
-      // Stop all tracks in the MediaStream that was manually acquired
       if (initialCameraStreamRef.current) {
         initialCameraStreamRef.current.getTracks().forEach(track => {
           console.log(`Stopping track in useEffect cleanup: ${track.kind}`);
-          track.stop(); // Stop each media track
+          track.stop();
         });
-        initialCameraStreamRef.current = null; // Clear the ref after stopping tracks
+        initialCameraStreamRef.current = null;
       }
     };
-  }, [updateLocation]); // Add updateLocation to dependency array
+  }, [updateLocation]);
+
+  // *** NEW: Effect to handle camera switching ***
+  useEffect(() => {
+    // This effect handles camera switching when the facingMode changes
+    if (webcamRef.current && webcamRef.current.video) {
+      // The Webcam component will automatically re-render with new constraints
+      console.log(`Switched to ${cameraFacingMode === 'environment' ? 'back' : 'front'} camera`);
+    }
+  }, [cameraFacingMode]);
 
   // Omitted for brevity: fetchAddress, fetchDetailedAddress, fetchLocalAddress, fetchSimpleAddress, formatAddress
   const fetchAddress = async (lat, lon) => { /* ... unchanged ... */ 
@@ -276,7 +309,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
 
     const finalImage = await createImageWithOverlay(imageSrc);
     setStampedImageSrc(finalImage);
-    setViewMode('preview'); // This change will unmount the <Webcam> component, which should also help release its stream.
+    setViewMode('preview');
     setLoading(false);
   };
 
@@ -301,6 +334,8 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
       formData.append('longitude', location.longitude.toString());
       formData.append('accuracy', location.accuracy.toString());
       formData.append('address', address);
+      // *** NEW: Add camera info to metadata ***
+      formData.append('camera_type', cameraFacingMode === 'environment' ? 'back' : 'front');
 
       const response = await api.post('/photos/upload', formData, {
         headers: {
@@ -309,7 +344,6 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
       });
 
       setLoadingMessage('Success!');
-      // Navigating away will unmount this component, triggering the useEffect cleanup.
       setTimeout(() => navigate('/previous-photos'), 1500);
 
     } catch (err) {
@@ -321,7 +355,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
 
   const handleRetake = () => {
     setStampedImageSrc(null);
-    setViewMode('camera'); // This will re-mount the Webcam component
+    setViewMode('camera');
   };
 
   const createImageWithOverlay = (imageSrc) => { /* ... unchanged ... */ 
@@ -364,6 +398,11 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
           hour12: true 
         });
         ctx.fillText(`Date: ${dateStr} | Time: ${timeStr}`, padding, currentY);
+        
+        // *** NEW: Add camera info to overlay ***
+        currentY += lineHeight;
+        const cameraType = cameraFacingMode === 'environment' ? 'Back Camera' : 'Front Camera';
+        ctx.fillText(`Camera: ${cameraType}`, padding, currentY);
         
         resolve(canvas.toDataURL('image/jpeg', 0.9));
       };
@@ -440,13 +479,13 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
 
   return (
     <Box sx={{ 
-      minHeight: embedded ? 'auto' : '100vh', // Adjust height for embedded mode
+      minHeight: embedded ? 'auto' : '100vh',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       bgcolor: 'white',
       position: 'relative',
-      p: embedded ? 1 : 2 // Adjust padding for embedded mode
+      p: embedded ? 1 : 2
     }}>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <Backdrop sx={{ 
@@ -462,40 +501,37 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
 
       {/* View 1: Live Camera */}
       {viewMode === 'camera' && (
-       <Box
-  sx={{
-    position: 'relative',
-    width: { 
-      xs: '90%',              // Wider on mobile
-      sm: '80%',              // Slightly smaller on small screens
-      md: '60%',              // More compact on medium screens
-      lg: '50%'               // Standard size on large screens
-    },
-    maxWidth: 600,            // Maintain a consistent max width
-    aspectRatio: '16/9',      // Use a consistent aspect ratio for all devices
-    height: {
-      xs: '40vh',             // Height for mobile
-      sm: 'auto',             // Flexible height on small screens
-      md: 'auto',             // Flexible height on medium screens
-      lg: 'auto'              // Flexible height on large screens
-    },
-    borderRadius: 2,          // Rounded corners for aesthetics
-    boxShadow: 3,             // Soft shadow for depth
-    bgcolor: 'black',         // Background color
-    overflow: 'hidden',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    m: 'auto'                 // Center the box horizontally
-  }}
->
-
-
-
+        <Box
+          sx={{
+            position: 'relative',
+            width: { 
+              xs: '90%',
+              sm: '80%',
+              md: '60%',
+              lg: '50%'
+            },
+            maxWidth: 600,
+            aspectRatio: '16/9',
+            height: {
+              xs: '40vh',
+              sm: 'auto',
+              md: 'auto',
+              lg: 'auto'
+            },
+            borderRadius: 2,
+            boxShadow: 3,
+            bgcolor: 'black',
+            overflow: 'hidden',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            m: 'auto'
+          }}
+        >
           {/* Close Button - Only show when NOT embedded */}
           {!embedded && (
             <IconButton 
-              onClick={handleClose} // Calls handleClose, which leads to unmounting
+              onClick={handleClose}
               sx={{
                 position: 'absolute',
                 top: 16,
@@ -514,6 +550,55 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
             </IconButton>
           )}
 
+          {/* *** NEW: Camera Switch Button *** */}
+          <IconButton
+            onClick={handleCameraMenuOpen}
+            sx={{
+              position: 'absolute',
+              top: 16,
+              left: 16,
+              zIndex: 20,
+              bgcolor: 'rgba(0, 0, 0, 0.5)',
+              color: 'white',
+              '&:hover': {
+                bgcolor: 'rgba(0, 0, 0, 0.7)',
+              },
+              width: { xs: 40, md: 48 },
+              height: { xs: 40, md: 48 }
+            }}
+          >
+            <SwitchCamera sx={{ fontSize: { xs: 20, md: 24 } }} />
+          </IconButton>
+
+          {/* *** NEW: Camera Selection Menu *** */}
+          <Menu
+            anchorEl={cameraMenuAnchor}
+            open={Boolean(cameraMenuAnchor)}
+            onClose={handleCameraMenuClose}
+            PaperProps={{
+              sx: {
+                mt: 1,
+                borderRadius: 2,
+                minWidth: 180,
+              }
+            }}
+          >
+            <MenuItem 
+              onClick={() => handleCameraSelect('environment')}
+              selected={cameraFacingMode === 'environment'}
+            >
+              <CameraRear sx={{ mr: 2, fontSize: 20 }} />
+              Back Camera
+            </MenuItem>
+            <MenuItem 
+              onClick={() => handleCameraSelect('user')}
+              selected={cameraFacingMode === 'user'}
+            >
+              <CameraFront sx={{ mr: 2, fontSize: 20 }} />
+              Front Camera
+            </MenuItem>
+          </Menu>
+
           {/* Camera feed */}
           <Webcam
             audio={false}
@@ -524,8 +609,9 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
               width: '100%',
               height: '100%',
               objectFit: 'cover',
-              borderRadius: embedded ? 0 : 12, // No border radius when embedded
-              transform: isMobile ? 'scaleX(-1)' : 'none',
+              borderRadius: embedded ? 0 : 12,
+              // *** CHANGED: Only mirror front camera ***
+              transform: cameraFacingMode === 'user' ? 'scaleX(-1)' : 'none',
             }}
           />
 
@@ -542,6 +628,14 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
               backdropFilter: 'blur(2px)',
             }}
           >
+            {/* *** NEW: Camera Type Indicator *** */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+              <SwitchCamera fontSize={isMobile ? 'small' : 'medium'} />
+              <Typography variant={isMobile ? 'caption' : 'body2'}>
+                {cameraFacingMode === 'environment' ? 'Back Camera' : 'Front Camera'}
+              </Typography>
+            </Box>
+
             {/* GPS Coordinates */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
               <GpsFixed fontSize={isMobile ? 'small' : 'medium'} color={location ? 'inherit' : 'error'} />
@@ -689,7 +783,7 @@ const CapturePhotoPage = ({ onClose, embedded = false }) => {
           {/* Close Button - Only show when NOT embedded */}
           {!embedded && (
             <IconButton
-              onClick={handleClose} // Calls handleClose, which leads to unmounting
+              onClick={handleClose}
               sx={{
                 position: 'absolute',
                 top: 16,
